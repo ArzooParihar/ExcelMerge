@@ -41,3 +41,10 @@ For example, `Employee Name` matches ` Employee Name `, but `employee name` does
 - Trailing blank header cells to the right of the last named header are ignored. Blank header cells inside the header range are still rejected.
 - Adding the same file more than once is blocked immediately with an error message. The Base Excel cannot also be added as an input.
 - Data rows are read consecutively from Row 2 until the first completely empty row. All rows after that first blank row are skipped and reported. The GUI displays usable/total non-empty rows and skipped count.
+
+## V4 updates
+- After processing, a clear Tkinter success popup appears with accepted/rejected file counts, final merged row count, and output paths. The app status line is also updated and the window gives an audible bell notification.
+- Every merge run creates a uniquely named `Rejected_Files_YYYYMMDD_HHMMSS` subfolder inside the selected output folder.
+- All input workbooks rejected during validation/processing are copied into that run's rejected-files folder. Original files are not moved or modified.
+- If two rejected source files have the same filename, the copied filename gets a numeric suffix to prevent overwriting.
+- The V4 completion popup also shows how many rejected files were successfully copied.

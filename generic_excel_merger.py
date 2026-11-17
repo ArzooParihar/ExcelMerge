@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -297,6 +298,7 @@ class MergerApp:
         output_ws = output_wb.create_sheet("Merged Data")
         output_ws.append(base_headers)
         report = []
+        rejected_files = []
         accepted = 0
         total_rows = 0
 
@@ -333,6 +335,7 @@ class MergerApp:
                 wb = load_workbook(path, read_only=True, data_only=False)
                 if sheet not in wb.sheetnames:
                     report.append((Path(path).name, "REJECTED", f"Worksheet not found: {sheet}"))
+                    rejected_files.append(path)
                     wb.close()
                     continue
                 ws = wb[sheet]
@@ -340,6 +343,7 @@ class MergerApp:
                 issues = header_problems(base_headers, candidate_headers)
                 if issues:
                     report.append((Path(path).name, "REJECTED", " | ".join(issues)))
+                    rejected_files.append(path)
                     wb.close()
                     continue
 
@@ -377,10 +381,30 @@ class MergerApp:
                 report.append((Path(path).name, "ACCEPTED", detail))
             except Exception as e:
                 report.append((Path(path).name, "REJECTED", f"Could not process workbook: {e}"))
+                rejected_files.append(path)
 
         stamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         master_path = os.path.join(out_dir, f"Master_Merged_{stamp}.xlsx")
         report_path = os.path.join(out_dir, f"Validation_Report_{stamp}.xlsx")
+        rejected_dir = os.path.join(out_dir, f"Rejected_Files_{stamp}")
+
+        # Create a separate rejected-files folder for every merge run.
+        os.makedirs(rejected_dir, exist_ok=True)
+        copied_rejected = 0
+        copy_errors = []
+        for rejected_path in rejected_files:
+            try:
+                source_name = Path(rejected_path).name
+                target = os.path.join(rejected_dir, source_name)
+                stem, ext = os.path.splitext(source_name)
+                suffix = 1
+                while os.path.exists(target):
+                    target = os.path.join(rejected_dir, f"{stem}_{suffix}{ext}")
+                    suffix += 1
+                shutil.copy2(rejected_path, target)
+                copied_rejected += 1
+            except Exception as copy_error:
+                copy_errors.append(f"{Path(rejected_path).name}: {copy_error}")
 
         if accepted:
             try:
@@ -410,16 +434,28 @@ class MergerApp:
                 else:
                     row[1].font = Font(color="008000", bold=True)
                 row[2].alignment = Alignment(wrap_text=True, vertical="top")
+            if copy_errors:
+                rws.append(["Rejected-file copy warning", "WARNING", " | ".join(copy_errors)])
             rw.save(report_path)
         except Exception as e:
             messagebox.showerror("Report save failed", str(e)); return
 
-        msg = (f"Completed.\n\nAccepted files: {accepted}\nRejected files: {len(self.files)-accepted}\n"
-               f"Rows merged: {total_rows}\n\nValidation report:\n{report_path}")
+        added_accepted = accepted - 1  # exclude Base Excel from input-file count
+        rejected_count = len(rejected_files)
+        msg = (f"Excel merge completed successfully.\n\n"
+               f"Accepted input files: {added_accepted}\n"
+               f"Rejected input files: {rejected_count}\n"
+               f"Rejected files copied: {copied_rejected}\n"
+               f"Total data rows in final Master (Base included): {total_rows}\n\n"
+               f"Validation report:\n{report_path}\n\n"
+               f"Rejected files folder:\n{rejected_dir}")
         if accepted:
             msg += f"\n\nMaster Excel:\n{master_path}"
-        self.status.set(f"Done: {added_accepted} added file(s) accepted, {rejected} rejected; final Master has {total_rows} data rows (Base included).")
-        messagebox.showinfo("Merge complete", msg)
+        if copy_errors:
+            msg += "\n\nSome rejected files could not be copied. See Validation Report for details."
+        self.status.set(f"Merge complete: {added_accepted} accepted, {rejected_count} rejected; {total_rows} final data rows. Rejected files: {rejected_dir}")
+        self.root.bell()
+        messagebox.showinfo("Merge Complete - Success", msg)
 
 if __name__ == "__main__":
     root = tk.Tk()
