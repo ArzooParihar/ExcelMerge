@@ -48,3 +48,10 @@ For example, `Employee Name` matches ` Employee Name `, but `employee name` does
 - All input workbooks rejected during validation/processing are copied into that run's rejected-files folder. Original files are not moved or modified.
 - If two rejected source files have the same filename, the copied filename gets a numeric suffix to prevent overwriting.
 - The V4 completion popup also shows how many rejected files were successfully copied.
+
+
+## V5 behavior update
+- Header matching is case-insensitive. For example, `Name`, `NAME`, and `name` are treated as the same header.
+- Leading/trailing spaces are ignored.
+- Output column names and order continue to follow the Base Excel exactly.
+- Headers differing only by letter case are duplicates and cause rejection.

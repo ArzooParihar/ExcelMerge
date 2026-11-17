@@ -13,10 +13,14 @@ APP_TITLE = "Generic Excel Merger & Validator"
 SUPPORTED = {".xlsx", ".xlsm"}
 
 def clean_header(value):
-    """Normalize only surrounding whitespace. Matching remains case-sensitive."""
+    """Return visible header text with surrounding whitespace removed."""
     if value is None:
         return ""
     return str(value).strip()
+
+def header_key(value):
+    """Case-insensitive comparison key; output text remains as in Base Excel."""
+    return clean_header(value).casefold()
 
 def read_sheet_names(path):
     wb = load_workbook(path, read_only=True, data_only=False)
@@ -86,25 +90,33 @@ def header_problems(base_headers, candidate_headers):
     problems = []
     if not base_headers:
         return ["Base worksheet has no headers in Row 1."]
+
     if any(h == "" for h in base_headers):
         blanks = [i + 1 for i, h in enumerate(base_headers) if h == ""]
         problems.append("Base Excel has blank header cell(s) inside the header range, column(s): " + ", ".join(map(str, blanks)))
-    base_dupes = [h for h, count in Counter(base_headers).items() if h and count > 1]
+
+    base_keys = [header_key(h) for h in base_headers]
+    candidate_keys = [header_key(h) for h in candidate_headers]
+
+    base_counts = Counter(k for k in base_keys if k)
+    base_dupes = list(dict.fromkeys(base_headers[i] for i, k in enumerate(base_keys) if k and base_counts[k] > 1))
     if base_dupes:
-        problems.append("Base Excel has duplicate header(s): " + ", ".join(repr(x) for x in base_dupes))
+        problems.append("Base Excel has duplicate header(s), ignoring letter case: " + ", ".join(repr(x) for x in base_dupes))
+
     if any(h == "" for h in candidate_headers):
         blanks = [i + 1 for i, h in enumerate(candidate_headers) if h == ""]
         problems.append("Blank header cell(s) inside the header range, column(s): " + ", ".join(map(str, blanks)))
-    dupes = [h for h, count in Counter(candidate_headers).items() if h and count > 1]
-    if dupes:
-        problems.append("Duplicate header(s): " + ", ".join(repr(x) for x in dupes))
 
-    # Remark is optional when it is a column in the Base Excel.
-    optional_base_headers = {h for h in base_headers if h.lower() == "remark"}
-    base_required = set(base_headers) - optional_base_headers
-    candidate_set = set(candidate_headers)
-    missing = [h for h in base_headers if h in base_required and h not in candidate_set]
-    additional = [h for h in candidate_headers if h and h not in set(base_headers)]
+    candidate_counts = Counter(k for k in candidate_keys if k)
+    dupes = list(dict.fromkeys(candidate_headers[i] for i, k in enumerate(candidate_keys) if k and candidate_counts[k] > 1))
+    if dupes:
+        problems.append("Duplicate header(s), ignoring letter case: " + ", ".join(repr(x) for x in dupes))
+
+    optional_base_keys = {header_key(h) for h in base_headers if header_key(h) == "remark"}
+    base_required_keys = set(base_keys) - optional_base_keys
+    candidate_set = set(candidate_keys)
+    missing = [h for h in base_headers if header_key(h) in base_required_keys and header_key(h) not in candidate_set]
+    additional = [h for h in candidate_headers if h and header_key(h) not in set(base_keys)]
     if missing:
         problems.append("Missing column(s): " + ", ".join(repr(x) for x in missing))
     if additional:
@@ -181,7 +193,7 @@ class MergerApp:
         ttk.Label(bottom, textvariable=self.status, wraplength=580).pack(side="left", fill="x", expand=True)
         ttk.Button(bottom, text="Validate & Merge", command=self.merge, style="Accent.TButton").pack(side="right")
 
-        note = ("Rules: exact header names (case-sensitive; outer spaces are ignored); column order may differ. "
+        note = ("Rules: header matching is case-insensitive; outer spaces are ignored; column order may differ. "
                 "Remark is optional if present in Base Excel; trailing blank header cells are ignored. "
                 "Internal blank/duplicate/additional headers reject a file. Data after the first fully empty row is skipped and reported.")
         ttk.Label(main, text=note, wraplength=810, foreground="#555").pack(anchor="w", pady=(10, 0))
@@ -306,7 +318,7 @@ class MergerApp:
         try:
             base_data_wb = load_workbook(self.base_path, read_only=True, data_only=False)
             base_data_ws = base_data_wb[self.base_sheet]
-            base_index = {h: i for i, h in enumerate(base_headers)}
+            base_index = {header_key(h): i for i, h in enumerate(base_headers)}
             base_usable, base_skipped, base_total = scan_data_rows(base_data_ws)
             base_gap_seen = False
             base_merged = 0
@@ -316,7 +328,7 @@ class MergerApp:
                     continue
                 if base_gap_seen:
                     continue
-                output_ws.append([row[base_index[h]] if base_index[h] < len(row) else None for h in base_headers])
+                output_ws.append([row[base_index[header_key(h)]] if base_index[header_key(h)] < len(row) else None for h in base_headers])
                 total_rows += 1
                 base_merged += 1
             base_data_wb.close()
@@ -347,8 +359,8 @@ class MergerApp:
                     wb.close()
                     continue
 
-                index_by_header = {h: i for i, h in enumerate(candidate_headers)}
-                optional_remark = next((h for h in base_headers if h.lower() == "remark"), None)
+                index_by_header = {header_key(h): i for i, h in enumerate(candidate_headers)}
+                optional_remark = next((h for h in base_headers if header_key(h) == "remark"), None)
                 usable, skipped, total_found = scan_data_rows(ws)
                 gap_seen = False
                 merged_from_file = 0
@@ -360,8 +372,9 @@ class MergerApp:
                         continue
                     mapped = []
                     for header in base_headers:
-                        if header in index_by_header:
-                            idx = index_by_header[header]
+                        key = header_key(header)
+                        if key in index_by_header:
+                            idx = index_by_header[key]
                             mapped.append(row[idx] if idx < len(row) else None)
                         elif optional_remark and header == optional_remark:
                             mapped.append(None)
@@ -374,7 +387,7 @@ class MergerApp:
                 wb.close()
                 accepted += 1
                 detail = f"Headers matched; worksheet: {sheet}; {merged_from_file} row(s) merged"
-                if optional_remark and optional_remark not in index_by_header:
+                if optional_remark and header_key(optional_remark) not in index_by_header:
                     detail += f"; optional '{optional_remark}' column absent, filled with blank values"
                 if skipped:
                     detail += f"; WARNING: {total_found} non-empty data row(s) found, {skipped} row(s) after first completely empty row were not merged"
