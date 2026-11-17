@@ -2,7 +2,7 @@
 
 ## Features
 - Select any `.xlsx` or `.xlsm` workbook as the Base Excel.
-- Select the Base worksheet; headers are read from Row 1.
+- Select the Base worksheet; headers are auto-detected within the first five rows; rows above the detected header are ignored.
 - Add multiple `.xlsx` / `.xlsm` input workbooks and choose a worksheet from each; the GUI displays each worksheet's data-row count.
 - Match columns by header name, not by column position; the GUI displays the Base Excel's column count and header names.
 - Input column order may differ; output follows the Base Excel column order.
@@ -25,8 +25,7 @@
    `py generic_excel_merger.py`
 
 ## Header matching rule
-Header names are case-sensitive. Leading/trailing spaces are ignored.
-For example, `Employee Name` matches ` Employee Name `, but `employee name` does not match `Employee Name`.
+Header matching ignores letter case and all whitespace differences, including extra/missing spaces, tabs, and line breaks anywhere in the header. Spaces around parentheses are also ignored. For example, `Employee Name`, `EMPLOYEE  NAME`, and `Employee\nName` match; `Date (Joining)` and `Date(Joining)` also match. Header row is auto-detected within the first five rows.
 
 ## Important
 - The Base Excel defines the required columns AND its own data rows are included first in the final Master Excel.
@@ -40,7 +39,7 @@ For example, `Employee Name` matches ` Employee Name `, but `employee name` does
 - If a workbook has only one worksheet, it is selected automatically without showing a sheet-selection dialog.
 - Trailing blank header cells to the right of the last named header are ignored. Blank header cells inside the header range are still rejected.
 - Adding the same file more than once is blocked immediately with an error message. The Base Excel cannot also be added as an input.
-- Data rows are read consecutively from Row 2 until the first completely empty row. All rows after that first blank row are skipped and reported. The GUI displays usable/total non-empty rows and skipped count.
+- Data rows are read consecutively from the row immediately after the detected header until the first completely empty row. All rows after that first blank row are skipped and reported. The GUI displays usable/total non-empty rows and skipped count.
 
 ## V4 updates
 - After processing, a clear Tkinter success popup appears with accepted/rejected file counts, final merged row count, and output paths. The app status line is also updated and the window gives an audible bell notification.
@@ -55,3 +54,9 @@ For example, `Employee Name` matches ` Employee Name `, but `employee name` does
 - Leading/trailing spaces are ignored.
 - Output column names and order continue to follow the Base Excel exactly.
 - Headers differing only by letter case are duplicates and cause rejection.
+
+
+## V6 updates
+- Header matching ignores capitalization and all whitespace differences, including extra/missing spaces, tabs, and line breaks; spaces around parentheses are ignored.
+- The app searches the first five rows of each selected worksheet for the header row. Rows above the detected header are ignored; data starts immediately below the header.
+- Validation Report now has one separate validation column for every Base Excel header. A green check indicates a valid/matched column; a red error explains a missing or duplicate column. Additional/blank header issues are shown in a separate Other Issues column.

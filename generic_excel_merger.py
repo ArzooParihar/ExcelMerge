@@ -13,14 +13,44 @@ APP_TITLE = "Generic Excel Merger & Validator"
 SUPPORTED = {".xlsx", ".xlsm"}
 
 def clean_header(value):
-    """Return visible header text with surrounding whitespace removed."""
+    """Keep the visible header text, removing only outer whitespace."""
     if value is None:
         return ""
     return str(value).strip()
 
 def header_key(value):
-    """Case-insensitive comparison key; output text remains as in Base Excel."""
-    return clean_header(value).casefold()
+    """Normalize case and ignore every whitespace/newline difference."""
+    text = clean_header(value).casefold()
+    return re.sub(r"\s+", "", text)
+
+def find_header_row(ws, base_headers=None, search_rows=5):
+    """Find the most likely header row among the first five rows.
+
+    For input sheets, prefer the row matching the largest number of Base headers;
+    ties are resolved by the number of populated cells, then earliest row.
+    For the Base sheet, use the row with the most populated cells.
+    """
+    base_keys = {header_key(h) for h in (base_headers or []) if header_key(h)}
+    best = None
+    max_row = min(search_rows, ws.max_row or search_rows)
+    for row_num in range(1, max_row + 1):
+        values = [clean_header(c.value) for c in ws[row_num]]
+        while values and values[-1] == "":
+            values.pop()
+        nonempty = sum(bool(v) for v in values)
+        if not nonempty:
+            continue
+        overlap = sum(1 for v in values if header_key(v) and header_key(v) in base_keys)
+        score = (overlap if base_keys else 0, nonempty, -row_num)
+        if best is None or score > best[0]:
+            best = (score, row_num, values)
+    if best is None:
+        return 1, []
+    return best[1], best[2]
+
+def get_headers(ws, base_headers=None):
+    """Return (header_row_number, headers) after scanning the first five rows."""
+    return find_header_row(ws, base_headers=base_headers)
 
 def read_sheet_names(path):
     wb = load_workbook(path, read_only=True, data_only=False)
@@ -57,25 +87,18 @@ def choose_sheet(parent, title, sheet_names):
     parent.wait_window(win)
     return result["sheet"]
 
-def get_headers(ws):
-    """Read Row 1 and discard only blank header cells at the far right."""
-    headers = [clean_header(c.value) for c in ws[1]]
-    while headers and headers[-1] == "":
-        headers.pop()
-    return headers
-
 def is_empty_row(row):
     return not any(value is not None and not (isinstance(value, str) and value.strip() == "") for value in row)
 
-def scan_data_rows(ws):
+def scan_data_rows(ws, header_row=1):
     """
-    Count non-empty data rows, but only accept the consecutive block starting at Row 2.
+    Count non-empty data rows, but only accept the consecutive block after the header row.
     The first completely empty row ends the data block. Any later non-empty rows are skipped.
     Returns (usable_rows, skipped_rows, total_nonempty_rows).
     """
     usable = skipped = total = 0
     gap_found = False
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
         if is_empty_row(row):
             gap_found = True
             continue
@@ -89,7 +112,7 @@ def scan_data_rows(ws):
 def header_problems(base_headers, candidate_headers):
     problems = []
     if not base_headers:
-        return ["Base worksheet has no headers in Row 1."]
+        return ["Base worksheet has no headers in the first five rows."]
 
     if any(h == "" for h in base_headers):
         blanks = [i + 1 for i, h in enumerate(base_headers) if h == ""]
@@ -101,7 +124,7 @@ def header_problems(base_headers, candidate_headers):
     base_counts = Counter(k for k in base_keys if k)
     base_dupes = list(dict.fromkeys(base_headers[i] for i, k in enumerate(base_keys) if k and base_counts[k] > 1))
     if base_dupes:
-        problems.append("Base Excel has duplicate header(s), ignoring letter case: " + ", ".join(repr(x) for x in base_dupes))
+        problems.append("Base Excel has duplicate header(s), after header normalization: " + ", ".join(repr(x) for x in base_dupes))
 
     if any(h == "" for h in candidate_headers):
         blanks = [i + 1 for i, h in enumerate(candidate_headers) if h == ""]
@@ -110,7 +133,7 @@ def header_problems(base_headers, candidate_headers):
     candidate_counts = Counter(k for k in candidate_keys if k)
     dupes = list(dict.fromkeys(candidate_headers[i] for i, k in enumerate(candidate_keys) if k and candidate_counts[k] > 1))
     if dupes:
-        problems.append("Duplicate header(s), ignoring letter case: " + ", ".join(repr(x) for x in dupes))
+        problems.append("Duplicate header(s), after header normalization: " + ", ".join(repr(x) for x in dupes))
 
     optional_base_keys = {header_key(h) for h in base_headers if header_key(h) == "remark"}
     base_required_keys = set(base_keys) - optional_base_keys
@@ -122,6 +145,37 @@ def header_problems(base_headers, candidate_headers):
     if additional:
         problems.append("Additional column(s): " + ", ".join(repr(x) for x in additional))
     return problems
+
+def build_column_validation(base_headers, candidate_headers):
+    """Return per-Base-column status plus workbook-level header issues."""
+    base_keys = [header_key(h) for h in base_headers]
+    candidate_keys = [header_key(h) for h in candidate_headers]
+    counts = Counter(k for k in candidate_keys if k)
+    statuses = {}
+    other = []
+    for header, key in zip(base_headers, base_keys):
+        matches = [i for i, candidate_key in enumerate(candidate_keys) if candidate_key == key and key]
+        if len(matches) > 1:
+            statuses[key] = "ERROR: Duplicate header in input"
+        elif len(matches) == 0:
+            if key == "remark":
+                statuses[key] = "✓ (optional; blank)"
+            else:
+                statuses[key] = "ERROR: Missing column"
+        else:
+            statuses[key] = "✓"
+    blank_positions = [str(i + 1) for i, h in enumerate(candidate_headers) if not h]
+    if blank_positions:
+        other.append("Blank header at input column(s): " + ", ".join(blank_positions))
+    extras = [h for h in candidate_headers if h and header_key(h) not in set(base_keys)]
+    if extras:
+        other.append("Additional column(s): " + ", ".join(extras))
+    # Duplicate headers that do not map to a Base column are still reported.
+    for key, count in counts.items():
+        if count > 1 and key not in set(base_keys):
+            names = [candidate_headers[i] for i, k in enumerate(candidate_keys) if k == key]
+            other.append("Duplicate extra header(s): " + ", ".join(names))
+    return statuses, other
 
 class MergerApp:
     def __init__(self, root):
@@ -161,7 +215,7 @@ class MergerApp:
         self.base_combo = ttk.Combobox(sheetrow, textvariable=self.base_sheet_var, state="readonly", width=35)
         self.base_combo.pack(side="left", padx=8)
         self.base_combo.bind("<<ComboboxSelected>>", self.on_base_sheet_change)
-        ttk.Label(sheetrow, text="Headers are always read from Row 1.", foreground="#555").pack(side="left", padx=8)
+        ttk.Label(sheetrow, text="Header is auto-detected within the first 5 rows.", foreground="#555").pack(side="left", padx=8)
         self.base_info = ttk.Label(base_box, text="Base columns: not loaded yet", wraplength=790, justify="left")
         self.base_info.pack(anchor="w", pady=(8, 0))
 
@@ -212,12 +266,13 @@ class MergerApp:
         try:
             wb = load_workbook(path, read_only=True, data_only=False)
             ws = wb[sheet]
-            headers = get_headers(ws)
-            usable_rows, skipped_rows, total_rows = scan_data_rows(ws)
+            header_row, headers = get_headers(ws)
+            usable_rows, skipped_rows, total_rows = scan_data_rows(ws, header_row)
             wb.close()
         except Exception as e:
             messagebox.showerror("Cannot read Base Excel", str(e)); return
         self.base_path, self.base_sheet = path, sheet
+        self.base_header_row = header_row
         self.base_label.config(text=path)
         self.base_sheet_var.set(sheet)
         self.base_combo["values"] = names
@@ -245,9 +300,16 @@ class MergerApp:
                 if sheet:
                     wb = load_workbook(path, read_only=True, data_only=False)
                     ws = wb[sheet]
-                    usable_rows, skipped_rows, total_rows = scan_data_rows(ws)
+                    base_headers_for_scan = []
+                    if self.base_path and self.base_sheet:
+                        base_wb = load_workbook(self.base_path, read_only=True, data_only=False)
+                        base_ws = base_wb[self.base_sheet]
+                        _, base_headers_for_scan = get_headers(base_ws)
+                        base_wb.close()
+                    header_row, candidate_headers_for_scan = get_headers(ws, base_headers_for_scan)
+                    usable_rows, skipped_rows, total_rows = scan_data_rows(ws, header_row)
                     wb.close()
-                    item = {"path": path, "sheet": sheet, "rows": usable_rows,
+                    item = {"path": path, "sheet": sheet, "header_row": header_row, "rows": usable_rows,
                             "skipped_rows": skipped_rows, "total_rows": total_rows}
                     self.files.append(item)
                     row_display = f"{usable_rows} / {total_rows}" + (f" (skip {skipped_rows})" if skipped_rows else "")
@@ -295,7 +357,7 @@ class MergerApp:
         try:
             base_wb = load_workbook(self.base_path, read_only=True, data_only=False)
             base_ws = base_wb[self.base_sheet]
-            base_headers = get_headers(base_ws)
+            base_header_row, base_headers = get_headers(base_ws)
             base_wb.close()
         except Exception as e:
             messagebox.showerror("Base Excel error", str(e)); return
@@ -319,10 +381,10 @@ class MergerApp:
             base_data_wb = load_workbook(self.base_path, read_only=True, data_only=False)
             base_data_ws = base_data_wb[self.base_sheet]
             base_index = {header_key(h): i for i, h in enumerate(base_headers)}
-            base_usable, base_skipped, base_total = scan_data_rows(base_data_ws)
+            base_usable, base_skipped, base_total = scan_data_rows(base_data_ws, base_header_row)
             base_gap_seen = False
             base_merged = 0
-            for row in base_data_ws.iter_rows(min_row=2, values_only=True):
+            for row in base_data_ws.iter_rows(min_row=base_header_row + 1, values_only=True):
                 if is_empty_row(row):
                     base_gap_seen = True
                     continue
@@ -333,10 +395,10 @@ class MergerApp:
                 base_merged += 1
             base_data_wb.close()
             accepted += 1
-            detail = f"Base worksheet: {self.base_sheet}; {base_merged} row(s) included"
+            detail = f"Base worksheet: {self.base_sheet}; header at Row {base_header_row}; {base_merged} row(s) included"
             if base_skipped:
                 detail += f"; WARNING: {base_total} non-empty data row(s) found, {base_skipped} row(s) after first completely empty row were not merged"
-            report.append((Path(self.base_path).name, "ACCEPTED (BASE)", detail))
+            report.append({"file": Path(self.base_path).name, "sheet": self.base_sheet, "status": "ACCEPTED (BASE)", "detail": detail, "columns": {header_key(h): "✓" for h in base_headers}, "other": ""})
         except Exception as e:
             messagebox.showerror("Base Excel read error", str(e))
             return
@@ -346,25 +408,26 @@ class MergerApp:
             try:
                 wb = load_workbook(path, read_only=True, data_only=False)
                 if sheet not in wb.sheetnames:
-                    report.append((Path(path).name, "REJECTED", f"Worksheet not found: {sheet}"))
+                    report.append({"file": Path(path).name, "sheet": sheet, "status": "REJECTED", "detail": f"Worksheet not found: {sheet}", "columns": {header_key(h): "ERROR: Worksheet not found" for h in base_headers}, "other": "Worksheet not found"})
                     rejected_files.append(path)
                     wb.close()
                     continue
                 ws = wb[sheet]
-                candidate_headers = get_headers(ws)
+                header_row, candidate_headers = get_headers(ws, base_headers)
                 issues = header_problems(base_headers, candidate_headers)
                 if issues:
-                    report.append((Path(path).name, "REJECTED", " | ".join(issues)))
+                    col_status, other_issues = build_column_validation(base_headers, candidate_headers)
+                    report.append({"file": Path(path).name, "sheet": sheet, "status": "REJECTED", "detail": " | ".join(issues), "columns": col_status, "other": " | ".join(other_issues)})
                     rejected_files.append(path)
                     wb.close()
                     continue
 
                 index_by_header = {header_key(h): i for i, h in enumerate(candidate_headers)}
                 optional_remark = next((h for h in base_headers if header_key(h) == "remark"), None)
-                usable, skipped, total_found = scan_data_rows(ws)
+                usable, skipped, total_found = scan_data_rows(ws, header_row)
                 gap_seen = False
                 merged_from_file = 0
-                for row in ws.iter_rows(min_row=2, values_only=True):
+                for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
                     if is_empty_row(row):
                         gap_seen = True
                         continue
@@ -386,14 +449,15 @@ class MergerApp:
 
                 wb.close()
                 accepted += 1
-                detail = f"Headers matched; worksheet: {sheet}; {merged_from_file} row(s) merged"
+                detail = f"Headers matched; worksheet: {sheet}; header at Row {header_row}; {merged_from_file} row(s) merged"
                 if optional_remark and header_key(optional_remark) not in index_by_header:
                     detail += f"; optional '{optional_remark}' column absent, filled with blank values"
                 if skipped:
                     detail += f"; WARNING: {total_found} non-empty data row(s) found, {skipped} row(s) after first completely empty row were not merged"
-                report.append((Path(path).name, "ACCEPTED", detail))
+                col_status, other_issues = build_column_validation(base_headers, candidate_headers)
+                report.append({"file": Path(path).name, "sheet": sheet, "status": "ACCEPTED", "detail": detail, "columns": col_status, "other": " | ".join(other_issues)})
             except Exception as e:
-                report.append((Path(path).name, "REJECTED", f"Could not process workbook: {e}"))
+                report.append({"file": Path(path).name, "sheet": sheet, "status": "REJECTED", "detail": f"Could not process workbook: {e}", "columns": {header_key(h): "ERROR: Processing failed" for h in base_headers}, "other": str(e)})
                 rejected_files.append(path)
 
         stamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -431,24 +495,48 @@ class MergerApp:
             rw = Workbook()
             rws = rw.active
             rws.title = "Validation Report"
-            rws.append(["File Name", "Status", "Details"])
+            report_headers = ["File Name", "Worksheet", "Overall Status"] + list(base_headers) + ["Other Issues", "Details"]
+            rws.append(report_headers)
             for cell in rws[1]:
                 cell.font = Font(bold=True, color="FFFFFF")
                 cell.fill = PatternFill("solid", fgColor="1F4E78")
+                cell.alignment = Alignment(wrap_text=True, vertical="center")
+            green_fill = PatternFill("solid", fgColor="C6EFCE")
+            red_fill = PatternFill("solid", fgColor="FFC7CE")
             for entry in report:
-                rws.append(list(entry))
-            rws.freeze_panes = "A2"
+                values = [entry["file"], entry.get("sheet", ""), entry["status"]]
+                for header in base_headers:
+                    values.append(entry.get("columns", {}).get(header_key(header), "✓"))
+                values.extend([entry.get("other", ""), entry.get("detail", "")])
+                rws.append(values)
+                current_row = rws.max_row
+                for col_idx in range(4, 4 + len(base_headers)):
+                    cell = rws.cell(current_row, col_idx)
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    if str(cell.value).startswith("ERROR"):
+                        cell.font = Font(color="9C0006", bold=True)
+                        cell.fill = red_fill
+                    else:
+                        cell.font = Font(color="006100", bold=True)
+                        cell.fill = green_fill
+            rws.freeze_panes = "D2"
             rws.auto_filter.ref = rws.dimensions
-            for col, width in {"A": 34, "B": 14, "C": 110}.items():
-                rws.column_dimensions[col].width = width
+            rws.column_dimensions["A"].width = 32
+            rws.column_dimensions["B"].width = 20
+            rws.column_dimensions["C"].width = 18
+            for col_idx in range(4, 4 + len(base_headers)):
+                rws.column_dimensions[get_column_letter(col_idx)].width = 24
+            other_col = 4 + len(base_headers)
+            detail_col = other_col + 1
+            rws.column_dimensions[get_column_letter(other_col)].width = 42
+            rws.column_dimensions[get_column_letter(detail_col)].width = 65
             for row in rws.iter_rows(min_row=2):
-                if row[1].value == "REJECTED":
-                    row[1].font = Font(color="C00000", bold=True)
-                else:
-                    row[1].font = Font(color="008000", bold=True)
-                row[2].alignment = Alignment(wrap_text=True, vertical="top")
+                row[2].font = Font(color="C00000" if row[2].value == "REJECTED" else "008000", bold=True)
+                for cell in row:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
             if copy_errors:
-                rws.append(["Rejected-file copy warning", "WARNING", " | ".join(copy_errors)])
+                warning_row = ["Rejected-file copy warning", "", "WARNING"] + [""] * len(base_headers) + [" | ".join(copy_errors), ""]
+                rws.append(warning_row)
             rw.save(report_path)
         except Exception as e:
             messagebox.showerror("Report save failed", str(e)); return
