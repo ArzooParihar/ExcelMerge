@@ -19,9 +19,16 @@ def clean_header(value):
     return str(value).strip()
 
 def header_key(value):
-    """Normalize case and ignore every whitespace/newline difference."""
+    """Normalize headers and resolve known spelling variants to one canonical key."""
     text = clean_header(value).casefold()
-    return re.sub(r"\s+", "", text)
+    text = re.sub(r"\s+", "", text)
+
+    # Known office-data spelling variants. Keep this mapping explicit so
+    # unrelated headers are never incorrectly matched by fuzzy similarity.
+    aliases = {
+        "paaport": "passport",
+    }
+    return aliases.get(text, text)
 
 def find_header_row(ws, base_headers=None, search_rows=5):
     """Find the most likely header row among the first five rows.

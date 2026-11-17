@@ -60,3 +60,11 @@ Header matching ignores letter case and all whitespace differences, including ex
 - Header matching ignores capitalization and all whitespace differences, including extra/missing spaces, tabs, and line breaks; spaces around parentheses are ignored.
 - The app searches the first five rows of each selected worksheet for the header row. Rows above the detected header are ignored; data starts immediately below the header.
 - Validation Report now has one separate validation column for every Base Excel header. A green check indicates a valid/matched column; a red error explains a missing or duplicate column. Additional/blank header issues are shown in a separate Other Issues column.
+
+
+V7 update:
+- "Passport" and the known office spelling variant "Paaport" are treated as
+  the same header, regardless of case, spaces, or line breaks.
+- The Base Excel header text remains unchanged in the output.
+- This is an explicit alias rule; unrelated header spellings are not
+  automatically fuzzy-matched.
